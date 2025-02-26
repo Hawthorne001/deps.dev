@@ -79,6 +79,29 @@ service Insights {
     };
   }
 
+  // GetDependents returns information about the number of distinct packages
+  // known to depend on the given package version. Dependent counts are
+  // currently available for Go, npm, Cargo, Maven and PyPI.
+  //
+  // Dependent counts are derived from the dependency graphs computed by
+  // deps.dev, which means that only public dependents are counted. As such,
+  // dependent counts should be treated as indicative of relative popularity
+  // rather than precisely accurate.
+  rpc GetDependents(GetDependentsRequest) returns (Dependents) {
+    option (google.api.http) = {
+      get: "/v3alpha/systems/{version_key.system}/packages/{version_key.name}/versions/{version_key.version}:dependents"
+    };
+  }
+
+  // GetCapabilityRequest returns counts for direct and indirect calls to
+  // Capslock capabilities for a given package version.
+  // Currently only available for Go.
+  rpc GetCapabilities(GetCapabilitiesRequest) returns (Capabilities) {
+    option (google.api.http) = {
+      get: "/v3alpha/systems/{version_key.system}/packages/{version_key.name}/versions/{version_key.version}:capabilities"
+    };
+  }
+
   // GetProject returns information about projects hosted by GitHub, GitLab, or
   // BitBucket, when known to us.
   rpc GetProject(GetProjectRequest) returns (Project) {
@@ -98,9 +121,8 @@ service Insights {
 
   // GetProjectPackageVersions returns known mappings between the requested
   // project and package versions.
-  // At most 1500 package versions are returned. Mappings which were derived from
-  // a [SLSA provenance attestation](https://slsa.dev/spec/v1.0/provenance)
-  // are served first.
+  // At most 1500 package versions are returned. Mappings which were derived
+  // from attestations are served first.
   rpc GetProjectPackageVersions(GetProjectPackageVersionsRequest) returns (ProjectPackageVersions) {
     option (google.api.http) = {
       get: "/v3alpha/projects/{project_key.id}:packageversions"
@@ -123,12 +145,13 @@ service Insights {
   }
 
   // Query returns information about multiple package versions, which can be
-  // specified by name, content hash, or both.
+  // specified by name, content hash, or both. If a hash was specified in the
+  // request, it returns the artifacts that matched the hash.
   //
   // Querying by content hash is currently supported for npm, Cargo, Maven, and
   // NuGet. It is typical for hash queries to return many results; hashes are
   // matched against multiple release artifacts (such as JAR files) that
-  // comprise package versions, and any given artifact may appear in many
+  // comprise package versions, and any given artifact may appear in several
   // package versions.
   rpc Query(QueryRequest) returns (QueryResult) {
     option (google.api.http) = {
@@ -182,6 +205,22 @@ service Insights {
     option (google.api.http) = {
       post: "/v3alpha/purlbatch"
       body: "*"
+    };
+  }
+
+  // QueryContainerImages searches for container image repositories on
+  // DockerHub that match the requested OCI Chain ID. At most 1000 image
+  // repositories are returned.
+  //
+  // An image repository is identifier (eg. 'tensorflow') that refers to
+  // a collection of images.
+  //
+  // An OCI Chain ID is a hashed encoding of an ordered sequence of OCI
+  // layers. For further details see the [OCI Chain ID
+  // spec](https://github.com/opencontainers/image-spec/blob/main/config.md#layer-chainid).
+  rpc QueryContainerImages(QueryContainerImagesRequest) returns (QueryContainerImagesResult) {
+    option (google.api.http) = {
+      get: "/v3alpha/querycontainerimages/{chain_id}"
     };
   }
 }
@@ -260,6 +299,17 @@ message Link {
   string url = 2;
 }
 
+// Non-normalized upstream identifiers encountered when syncing this package
+// version.
+message UpstreamIdentifier {
+  // The non-normalized package name string.
+  string package_name = 1;
+  // The non-normalized version string.
+  string version_string = 2;
+  // The upstream source for this identifier.
+  string source = 3;
+}
+
 // DependencyRelation describes the relation of a node within a dependency
 // graph.
 enum DependencyRelation {
@@ -281,6 +331,30 @@ message SLSAProvenance {
   // The Sigstore bundle containing this attestation was verified using the
   // [sigstore-go](https://github.com/sigstore/sigstore-go) library.
   bool verified = 4;
+}
+
+// Attestation represents a generic attestation. Fields are populated based
+// on 'type'.
+message Attestation {
+  // The type of attestation.
+  // One of https://slsa.dev/provenance/v0.2, https://slsa.dev/provenance/v1,
+  // https://docs.pypi.org/attestations/publish/v1.
+  string type = 1;
+  // The URL of the attestation if there is one.
+  string url = 2;
+  // The attestation has been cryptographically verified by deps.dev.
+  // For attestations distributed in a Sigstore bundle, this field indicates
+  // the bundle was verified using the
+  // [sigstore-go](https://github.com/sigstore/sigstore-go) library.
+  bool verified = 3;
+
+  // Only set if type is https://slsa.dev/provenance/v0.2,
+  // https://slsa.dev/provenance/v1,
+  // https://docs.pypi.org/attestations/publish/v1.
+  // The source code repository used to build the version.
+  string source_repository = 4;
+  // The commit of the source code repository the version was built from.
+  string commit = 5;
 }
 
 // GetPackageRequest identifies a package for which to return information.
@@ -318,6 +392,9 @@ message Package {
     // system-specific, but it is commonly the version with the greatest
     // version number, ignoring pre-release versions.
     bool is_default = 2;
+
+    // If true, this version has been marked as deprecated.
+    bool is_deprecated = 5;
   }
 
   // The available versions of the package.
@@ -351,6 +428,9 @@ message Version {
   // number, ignoring pre-release versions.
   bool is_default = 2;
 
+  // If true, this version has been marked as deprecated.
+  bool is_deprecated = 12;
+
   // The licenses governing the use of this package version.
   //
   // We identify licenses as
@@ -360,8 +440,8 @@ message Version {
   // information, this field is empty. When more than one license is listed,
   // their relationship is unspecified.
   //
-  // For Cargo, Maven, npm, and PyPI, license information is read from the
-  // package metadata. For Go, license information is determined using the
+  // For Cargo, Maven, npm, NuGet, and PyPI, license information is read from
+  // the package metadata. For Go, license information is determined using the
   // [licensecheck](https://github.com/google/licensecheck) package.
   //
   // License information is not intended to be legal advice, and you should
@@ -369,8 +449,36 @@ message Version {
   // needs.
   repeated string licenses = 3;
 
-  // Security advisories known to affect this package version.
-  // Further information can be requested using the Advisory method.
+  message License {
+    // For Cargo, Maven, npm, NuGet, and PyPI, this field holds the license as
+    // specified by the package author in the package metadata. For Go, it
+    // holds license information as determined using the
+    // [licensecheck](https://github.com/google/licensecheck) package.
+    string license = 1;
+
+    // The license mapped to an
+    // [SPDX 2.1](https://spdx.dev/spdx-specification-21-web-version/)
+    // expression, or "non-standard" if the license cannot be unambiguously
+    // mapped to SPDX.
+    string spdx = 2;
+  }
+
+  // Detailed information about the licenses governing the use of this package
+  // version.
+  //
+  // When deps.dev is unable to obtain license information, this field is
+  // empty.
+  //
+  // License information is not intended to be legal advice, and you should
+  // independently verify the license or terms of any software for your own
+  // needs.
+  repeated License license_details = 13;
+
+  // Security advisories known to affect this package version directly. Further
+  // information can be requested using the Advisory method.
+  //
+  // Note that this field does not include advisories that affect dependencies
+  // of this package version.
   repeated AdvisoryKey advisory_keys = 4;
 
   // Links declared by or derived from package version metadata, to external
@@ -378,8 +486,14 @@ message Version {
   // these links are not verified for correctness.
   repeated Link links = 5;
 
-  // SLSA provenances for this version if they are available.
+  // SLSA provenance information for this package version. Extracted from a
+  // SLSA provenance attestation. This is only populated for npm package
+  // versions. See the 'attestations' field for more attestations (including
+  // SLSA provenance) for all systems.
   repeated SLSAProvenance slsa_provenances = 7;
+
+  // Attestations for this package version.
+  repeated Attestation attestations = 14;
 
   // URLs for the package management registries this package version is
   // available from.
@@ -398,12 +512,16 @@ message Version {
 
   // Projects that are related to this package version.
   repeated Project related_projects = 10;
+
+  // Some upstream identifiers used to refer to this package version.
+  repeated UpstreamIdentifier upstream_identifiers = 11;
 }
 
 // GetVersionBatchRequest identifies a batch of versions for which to return
 // Version information.
 message GetVersionBatchRequest {
   // The batch list of versions to return Version information for.
+  // Up to 5000 requests are allowed in a single batch.
   repeated GetVersionRequest requests = 1;
   // If set, request the next page of the result set. It must be set to the
   // page token provided by the previous version batch response. All other
@@ -708,6 +826,55 @@ message Dependencies {
   string error = 3;
 }
 
+// GetDependentsRequest identifies a package version for which to return
+// dependent counts.
+message GetDependentsRequest {
+  VersionKey version_key = 1;
+}
+
+// Dependents holds information about the number of distinct packages known to
+// depend on a package version.
+//
+// Dependent counts are derived from the dependency graphs computed by
+// deps.dev, which means that only public dependents are counted. As such,
+// dependent counts should be treated as indicative of relative popularity
+// rather than precisely accurate.
+message Dependents {
+  // The number of packages known to depend on this package version, either
+  // directly or indirectly. Note that this may be less than the sum of the
+  // direct and indirect dependent counts.
+  uint32 dependent_count = 1;
+
+  // The number of packages known to depend directly on this package version.
+  uint32 direct_dependent_count = 2;
+
+  // The number of packages known to depend indirectly on this package version.
+  uint32 indirect_dependent_count = 3;
+}
+
+// GetCapabilitiesRequest identifies a package version for which to return
+// capabilities.
+message GetCapabilitiesRequest {
+  VersionKey version_key = 1;
+}
+
+// Capabilities holds identified capabilities and callpaths for a package version.
+message Capabilities {
+  // Capabilities stores the capabilities identified for the package.
+  message Capability {
+    // A Capslock capability, indicating that the packages uses this capability.
+    string capability = 1;
+    // The number of calls from this package directly to this capability.
+    uint32 direct_count = 2;
+    // The number of calls from this package to the capability via another
+    // package.
+    uint32 indirect_count = 3;
+  }
+  // The Capslock capabilities associated with a package, along with the number
+  // of direct and indirect callpaths to this capability.
+  repeated Capability capabilities = 1;
+}
+
 // GetProjectRequest identifies a project for which to return information.
 message GetProjectRequest {
   ProjectKey project_key = 1;
@@ -722,15 +889,15 @@ message Project {
 
   // The number of open issues reported by the project host.
   // Only available for GitHub and GitLab.
-  int64 open_issues_count = 2;
+  int32 open_issues_count = 2;
 
   // The number of stars reported by the project host.
   // Only available for GitHub and GitLab.
-  int64 stars_count = 3;
+  int32 stars_count = 3;
 
   // The number of forks reported by the project host.
   // Only available for GitHub and GitLab.
-  int64 forks_count = 4;
+  int32 forks_count = 4;
 
   // The license reported by the project host.
   string license = 5;
@@ -786,7 +953,7 @@ message Project {
 
       // A score in the range [0,10]. A higher score is better.
       // A negative score indicates that the check did not run successfully.
-      int64 score = 3;
+      int32 score = 3;
 
       // The reason for the score.
       string reason = 4;
@@ -813,9 +980,9 @@ message Project {
 
   message OSSFuzzDetails {
     // The total number of lines of code in the project.
-    int64 line_count = 1;
+    int32 line_count = 1;
     // The number of lines of code covered by fuzzing.
-    int64 line_cover_count = 2;
+    int32 line_cover_count = 2;
     // The date the fuzz test that produced the coverage information was run
     // against this project.
     // The time portion of this field is midnight UTC.
@@ -835,6 +1002,7 @@ message Project {
 // Project information.
 message GetProjectBatchRequest {
   // The batch list of projects to return Project information for.
+  // Up to 5000 requests are allowed in a single batch.
   repeated GetProjectRequest requests = 1;
   // If set, request the next page of the result set. It must be set to the
   // page token provided by the previous project batch response. All other
@@ -881,6 +1049,11 @@ enum ProjectRelationProvenance {
   // This project contains the package version (Go specific).
   GO_ORIGIN = 2;
 
+  // There is a [PyPI Publish
+  // attestation](https://docs.pypi.org/attestations/publish/v1/) that links
+  // this package version to this project.
+  PYPI_PUBLISH_ATTESTATION = 3;
+
   // The package version's metadata contains an unverified link to this project.
   UNVERIFIED_METADATA = 10;
 }
@@ -893,8 +1066,12 @@ message ProjectPackageVersions {
   message Version {
     // The identifier for the version.
     VersionKey version_key = 1;
-    // The SLSA provenance statements that link the version to the project.
+    // The SLSA provenance statements that link the version to the project. This
+    // is only populated for npm package versions. See the 'attestations' field
+    // for more attestations (including SLSA provenance) for all systems.
     repeated SLSAProvenance slsa_provenances = 2;
+    // Attestations that link the version to the project.
+    repeated Attestation attestations = 5;
     // What the relationship between the project and the package version is.
     ProjectRelationType relation_type = 3;
     // How the mapping between project and package version was discovered.
@@ -973,8 +1150,22 @@ message QueryRequest {
 
 // QueryResult holds information about package versions matching the query.
 message QueryResult {
+  message Result {
+    // A package version matching the query.
+    Version version = 1;
+
+    // An artifact is content associated with a package version, such as a JAR
+    // file. Currently supported for npm, Cargo, Maven, and NuGet.
+    message Artifact {
+       // The origin of the artifact with this hash.
+       string url = 1;
+    }
+    // If a hash was specified in the request, artifacts describes the upstream
+    // artifacts matching the hash.
+    repeated Artifact artifacts = 2;
+  }
   // Package versions matching the query. At most 1000 versions are returned.
-  repeated Version versions = 1;
+  repeated Result results = 1;
 }
 
 // PurlLookupRequest identifies a purl to search for.
@@ -996,6 +1187,7 @@ message PurlLookupResult {
 // PurlLookupBatchRequest identifies a batch of purls to search for.
 message PurlLookupBatchRequest {
   // The batch list of purls to search for.
+  // Up to 5000 requests are allowed in a single batch.
   repeated PurlLookupRequest requests = 1;
   // If set, request the next page of the result set. It must be set to the
   // page token provided by the previous purl lookup batch response. All other
@@ -1018,4 +1210,22 @@ message PurlLookupBatchResult {
   // If set, this batch is not the full result set. This page token
   // may be used to fetch more results in a subsequent request.
   string next_page_token = 2;
+}
+
+// QueryContainerImagesRequest contains an OCI Chain ID to search for.
+message QueryContainerImagesRequest {
+  // An OCI Chain ID referring to an ordered sequence of OCI layers.
+  string chain_id = 1;
+}
+
+// QueryContainerImagesResults contains repositories corresponding to the
+// queried OCI Chain ID.
+message QueryContainerImagesResult {
+  message Result {
+    // An image repository (eg. 'tensorflow') referring to collection of
+    // images.
+    string repository = 1;
+  }
+  // The query results. At most 1000 results are returned.
+  repeated Result results = 1;
 }

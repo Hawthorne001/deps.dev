@@ -39,6 +39,28 @@ func TestMetadata(t *testing.T) {
 				"2.0.0",
 				"3.0.0",
 			},
+			LastUpdated: "20240101000000",
+			Snapshot: Snapshot{
+				Timestamp:   "20240101.000000",
+				BuildNumber: 1,
+				LocalCopy:   true,
+			},
+			SnapshotVersions: []SnapshotVersion{
+				{
+					Classifier: "sources",
+					Extension:  "jar",
+					Value:      "4.0.0-SNAPSHOT",
+					Updated:    "20240101000000",
+				},
+			},
+		},
+		Version: "4.0.0-SNAPSHOT",
+		Plugins: []MetadataPlugin{
+			{
+				Name:       "plugin",
+				Prefix:     "plugin",
+				ArtifactID: "plugin",
+			},
 		},
 	}
 	var got Metadata
@@ -46,6 +68,6 @@ func TestMetadata(t *testing.T) {
 		t.Fatalf("failed to unmarshal input: %v", err)
 	}
 	if diff := cmp.Diff(got, want); diff != "" {
-		t.Errorf("unmarshal input got: %v,\n want: %v", got, want)
+		t.Errorf("unmarshal input:\n(-got, +want):\n%s", diff)
 	}
 }

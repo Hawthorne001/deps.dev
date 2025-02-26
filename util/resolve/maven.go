@@ -119,8 +119,9 @@ func (a *APIClient) fetchMavenParents(ctx context.Context, current maven.Project
 			return err
 		}
 
-		proj := mavenRequirementsToProject(resp.Maven)
-		if err := proj.MergeProfiles(maven.JDKProfileActivation, maven.OSProfileActivation); err != nil {
+		proj := mavenRequirementsToProject(current, resp.Maven)
+		// Only merge default profiles by passing empty JDK and OS information.
+		if err := proj.MergeProfiles("", maven.ActivationOS{}); err != nil {
 			return err
 		}
 		project.MergeParent(proj)
@@ -129,21 +130,27 @@ func (a *APIClient) fetchMavenParents(ctx context.Context, current maven.Project
 	return project.Interpolate()
 }
 
-func (a *APIClient) mavenRequirements(ctx context.Context, reqs *pb.Requirements_Maven) ([]RequirementVersion, error) {
-	project := mavenRequirementsToProject(reqs)
-	if err := project.MergeProfiles(maven.JDKProfileActivation, maven.OSProfileActivation); err != nil {
+func (a *APIClient) mavenRequirements(ctx context.Context, vk VersionKey, reqs *pb.Requirements_Maven) ([]RequirementVersion, error) {
+	projKey, err := maven.MakeProjectKey(vk.Name, vk.Version)
+	if err != nil {
+		return nil, err
+	}
+	project := mavenRequirementsToProject(projKey, reqs)
+	// Only merge default profiles by passing empty JDK and OS information.
+	if err := project.MergeProfiles("", maven.ActivationOS{}); err != nil {
 		return nil, err
 	}
 	if err := a.fetchMavenParents(ctx, project.Parent.ProjectKey, &project); err != nil {
 		return nil, err
 	}
 	project.ProcessDependencies(func(group, artifact, v maven.String) (maven.DependencyManagement, error) {
-		var result maven.Project
-		if err := a.fetchMavenParents(ctx, maven.ProjectKey{
+		pk := maven.ProjectKey{
 			GroupID:    group,
 			ArtifactID: artifact,
 			Version:    v,
-		}, &result); err != nil {
+		}
+		result := maven.Project{ProjectKey: pk}
+		if err := a.fetchMavenParents(ctx, pk, &result); err != nil {
 			return maven.DependencyManagement{}, err
 		}
 		return result.DependencyManagement, nil
@@ -166,7 +173,7 @@ func (a *APIClient) mavenRequirements(ctx context.Context, reqs *pb.Requirements
 	return result, nil
 }
 
-func mavenRequirementsToProject(req *pb.Requirements_Maven) maven.Project {
+func mavenRequirementsToProject(pk maven.ProjectKey, req *pb.Requirements_Maven) maven.Project {
 	if req == nil {
 		return maven.Project{}
 	}
@@ -176,22 +183,25 @@ func mavenRequirementsToProject(req *pb.Requirements_Maven) maven.Project {
 		for _, d := range deps {
 			var exs []maven.Exclusion
 			for _, ex := range d.Exclusions {
-				j := strings.Index(d.Name, ":")
-				exs = append(exs, maven.Exclusion{
-					GroupID:    maven.String(ex[:j]),
-					ArtifactID: maven.String(ex[j+1:]),
-				})
+				exKey, err := maven.MakeProjectKey(ex, "")
+				if err != nil {
+					continue
+				}
+				exs = append(exs, maven.Exclusion{GroupID: exKey.GroupID, ArtifactID: exKey.ArtifactID})
 			}
 
-			i := strings.Index(d.Name, ":")
+			dk, err := maven.MakeProjectKey(d.Name, "")
+			if err != nil {
+				continue
+			}
 			result = append(result, maven.Dependency{
-				GroupID:    maven.String(d.Name[:i]),
-				ArtifactID: maven.String(d.Name[i+1:]),
+				GroupID:    dk.GroupID,
+				ArtifactID: dk.ArtifactID,
 				Version:    maven.String(d.Version),
 				Type:       maven.String(d.Type),
 				Classifier: maven.String(d.Classifier),
 				Scope:      maven.String(d.Scope),
-				Optional:   maven.BoolString(d.Optional),
+				Optional:   maven.FalsyBool(d.Optional),
 				Exclusions: exs,
 			})
 		}
@@ -216,8 +226,8 @@ func mavenRequirementsToProject(req *pb.Requirements_Maven) maven.Project {
 				ID:        maven.String(r.Id),
 				URL:       maven.String(r.Url),
 				Layout:    maven.String(r.Layout),
-				Releases:  maven.RepositoryPolicy{Enabled: maven.String(r.ReleasesEnabled)},
-				Snapshots: maven.RepositoryPolicy{Enabled: maven.String(r.SnapshotsEnabled)},
+				Releases:  maven.RepositoryPolicy{Enabled: maven.TruthyBool(r.ReleasesEnabled)},
+				Snapshots: maven.RepositoryPolicy{Enabled: maven.TruthyBool(r.SnapshotsEnabled)},
 			})
 		}
 		return result
@@ -226,7 +236,7 @@ func mavenRequirementsToProject(req *pb.Requirements_Maven) maven.Project {
 	var profiles []maven.Profile
 	for _, p := range req.Profiles {
 		activation := maven.Activation{
-			ActiveByDefault: maven.BoolString(p.Activation.ActiveByDefault),
+			ActiveByDefault: maven.FalsyBool(p.Activation.ActiveByDefault),
 		}
 		if p.Activation.Jdk != nil {
 			activation.JDK = maven.String(p.Activation.Jdk.Jdk)
@@ -261,7 +271,15 @@ func mavenRequirementsToProject(req *pb.Requirements_Maven) maven.Project {
 		})
 	}
 
+	var parent maven.Parent
+	if req.Parent != nil {
+		parent.ProjectKey, _ = maven.MakeProjectKey(req.Parent.Name, req.Parent.Version)
+
+	}
+
 	return maven.Project{
+		ProjectKey:           pk,
+		Parent:               parent,
 		Dependencies:         getDependencies(req.Dependencies),
 		DependencyManagement: maven.DependencyManagement{Dependencies: getDependencies(req.DependencyManagement)},
 		Properties:           maven.Properties{Properties: getProperties(req.Properties)},

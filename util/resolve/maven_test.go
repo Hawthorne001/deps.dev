@@ -16,7 +16,6 @@ package resolve
 
 import (
 	"context"
-	"reflect"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -130,8 +129,8 @@ func TestMavenVersion(t *testing.T) {
 			VersionKey: vk,
 			AttrSet:    test.attr,
 		}
-		if !reflect.DeepEqual(got, want) {
-			t.Errorf("Version(%v):\ngot: %v\nwant: %v\n", vk, got, want)
+		if diff := cmp.Diff(got, want); diff != "" {
+			t.Errorf("Version(%v):\n(-got, +want):\n%s", vk, diff)
 		}
 	}
 }
@@ -142,6 +141,13 @@ func TestMavenRequirements(t *testing.T) {
 	}
 
 	ctx := context.Background()
+	vk := VersionKey{
+		PackageKey: PackageKey{
+			System: Maven,
+			Name:   "abc:xyz",
+		},
+		Version: "3.2.1",
+	}
 	reqs := &pb.Requirements_Maven{
 		Parent: &pb.VersionKey{
 			System:  pb.System_MAVEN,
@@ -165,9 +171,7 @@ func TestMavenRequirements(t *testing.T) {
 			{
 				Id: "profile-one",
 				Activation: &pb.Requirements_Maven_Profile_Activation{
-					Os: &pb.Requirements_Maven_Profile_Activation_OS{
-						Name: "Linux",
-					},
+					ActiveByDefault: "true",
 				},
 				Dependencies: []*pb.Requirements_Maven_Dependency{
 					{Name: "org.dependency:fff", Version: "${fff.version}"},
@@ -178,7 +182,7 @@ func TestMavenRequirements(t *testing.T) {
 			},
 		},
 	}
-	got, err := client.mavenRequirements(ctx, reqs)
+	got, err := client.mavenRequirements(ctx, vk, reqs)
 	if err != nil {
 		t.Fatalf("mavenRequirements: %v", err)
 	}
@@ -233,9 +237,19 @@ func TestMavenRequirements(t *testing.T) {
 				Version:     "6.0.0",
 			},
 		},
+		{
+			VersionKey: VersionKey{
+				PackageKey: PackageKey{
+					System: Maven,
+					Name:   "org.dependency:ggg",
+				},
+				VersionType: Requirement,
+				Version:     "7.0.0",
+			},
+		},
 	}
 	if d := cmp.Diff(want, got); d != "" {
-		t.Errorf("mavenRequirements:\n(- want, + got):\n%s", d)
+		t.Errorf("mavenRequirements:\n(-want, +got):\n%s", d)
 	}
 }
 
@@ -249,15 +263,15 @@ func TestDepType(t *testing.T) {
 
 	tests := []struct {
 		typ, scope maven.String
-		optional   maven.BoolString
+		optional   maven.FalsyBool
 		exclusions []maven.Exclusion
 		want       dep.Type
 	}{
 		{"jar", "test", "true", nil, dep.NewType(dep.Test, dep.Opt)},
 		{"", "import", "", nil, type1},
 		{"pom", "compile", "", []maven.Exclusion{
-			{"org.example", "abc"},
-			{"org.exclude", "*"},
+			{GroupID: "org.example", ArtifactID: "abc"},
+			{GroupID: "org.exclude", ArtifactID: "*"},
 		}, type2},
 	}
 

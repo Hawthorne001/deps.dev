@@ -14,7 +14,11 @@
 
 package maven
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+	"strings"
+)
 
 type ProjectKey struct {
 	GroupID    String `xml:"groupId,omitempty"`
@@ -24,6 +28,18 @@ type ProjectKey struct {
 
 func (pk ProjectKey) Name() string {
 	return fmt.Sprintf("%s:%s", pk.GroupID, pk.ArtifactID)
+}
+
+func MakeProjectKey(name, version string) (ProjectKey, error) {
+	group, artifact, ok := strings.Cut(name, ":")
+	if !ok {
+		return ProjectKey{}, errors.New("invalid Maven package name")
+	}
+	return ProjectKey{
+		GroupID:    String(group),
+		ArtifactID: String(artifact),
+		Version:    String(version),
+	}, nil
 }
 
 type Parent struct {
@@ -90,7 +106,7 @@ func (p *PluginManagement) merge(parent PluginManagement) {
 
 type Plugin struct {
 	ProjectKey
-	Inherited    BoolString   `xml:"inherited,omitempty"`
+	Inherited    TruthyBool   `xml:"inherited,omitempty"`
 	Dependencies []Dependency `xml:"dependencies>dependency,omitempty"`
 }
 
@@ -199,7 +215,7 @@ func (r *Repository) interpolate(properties map[string]string) bool {
 }
 
 type RepositoryPolicy struct {
-	Enabled String `xml:"enabled"`
+	Enabled TruthyBool `xml:"enabled"`
 }
 
 func (rp *RepositoryPolicy) interpolate(properties map[string]string) bool {
@@ -226,7 +242,6 @@ func (p *Project) MergeParent(parent Project) {
 	p.Build.merge(parent.Build)
 	p.Dependencies = append(p.Dependencies, parent.Dependencies...)
 	p.Repositories = append(p.Repositories, parent.Repositories...)
-	p.Profiles = append(p.Profiles, parent.Profiles...)
 }
 
 // Interpolate resolves placeholders in Project if there exists.

@@ -35,7 +35,7 @@ type Profile struct {
 // Activation contains information to decide if a build profile is activated or not.
 // https://maven.apache.org/guides/introduction/introduction-to-profiles.html#details-on-profile-activation=
 type Activation struct {
-	ActiveByDefault BoolString         `xml:"activeByDefault,omitempty"`
+	ActiveByDefault FalsyBool          `xml:"activeByDefault,omitempty"`
 	JDK             String             `xml:"jdk,omitempty"`
 	OS              ActivationOS       `xml:"os,omitempty"`
 	Property        ActivationProperty `xml:"property,omitempty"`
@@ -72,10 +72,16 @@ func (af ActivationFile) blank() bool {
 }
 
 // activated returns if a Maven build profile is activated or not.
+// If no JDK or OS information is provided, the profile is considered
+// as not activated.
 // Since Maven 3.2.2 Activation occurs when all of the specified criteria have
 // been met: https://maven.apache.org/pom.html#activation
 // TODO: support profile activation on File.
 func (p *Profile) activated(jdk string, os ActivationOS) (bool, error) {
+	if jdk == "" && os.blank() {
+		return false, nil
+	}
+
 	act := p.Activation
 	res := false
 	if act.JDK != "" {
@@ -165,19 +171,21 @@ var (
 
 // MergeProfiles merge the data in activated profiles to the project.
 // If there is no active profile, merge the data from default profiles.
+// If no JDK or OS information is provided, default profiles are merged.
 // The activation is based on the constants specified above.
-func (p *Project) MergeProfiles(jdk string, os ActivationOS) error {
+func (p *Project) MergeProfiles(jdk string, os ActivationOS) (err error) {
 	activeProfiles := make([]Profile, 0, len(p.Profiles))
 	defaultProfiles := make([]Profile, 0, len(p.Profiles))
 	for _, prof := range p.Profiles {
-		act, err := prof.activated(jdk, os)
-		if err != nil {
-			return fmt.Errorf("profile activation error: %v", err)
+		act, actErr := prof.activated(jdk, os)
+		if actErr != nil {
+			// Keep the error for later, and try other profiles.
+			err = appendError(err, actErr)
 		}
 		if act {
 			activeProfiles = append(activeProfiles, prof)
 		}
-		if prof.Activation.ActiveByDefault == "true" {
+		if prof.Activation.ActiveByDefault.Boolean() {
 			defaultProfiles = append(defaultProfiles, prof)
 		}
 	}
@@ -186,10 +194,20 @@ func (p *Project) MergeProfiles(jdk string, os ActivationOS) error {
 		activeProfiles = defaultProfiles
 	}
 	for _, prof := range activeProfiles {
-		p.Properties.merge(prof.Properties)
+		// Properties in active profiles should overwrite global properties.
+		prof.Properties.merge(p.Properties)
+		p.Properties = prof.Properties
+
 		p.DependencyManagement.merge(prof.DependencyManagement)
 		p.Dependencies = append(p.Dependencies, prof.Dependencies...)
 		p.Repositories = append(p.Repositories, prof.Repositories...)
 	}
-	return nil
+	return
+}
+
+func appendError(e1, e2 error) error {
+	if e1 == nil {
+		return e2
+	}
+	return fmt.Errorf("%w, %w", e1, e2)
 }
